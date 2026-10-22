@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ポッピンロープ ポイント調整ツール</title>
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 12px; }
+  .calc { max-width: 520px; margin: 0 auto; }
+  label { display: block; margin-top: 8px; font-weight: bold; }
+  input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; font-size: 1em; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { margin-top: 16px; width: 100%; padding: 12px; font-size: 1.1em; }
+  .errors { color: #c00; padding-left: 20px; }
+  .usage { background: #f5f5f5; border-radius: 8px; padding: 4px 12px 8px; font-size: 0.9em; color: #222; }
+  .usage h3 { margin: 8px 0 4px; }
+  .usage ol { margin: 0; padding-left: 20px; }
+  .usage li { margin-bottom: 6px; }
+  .result-box { border: 1px solid #999; border-radius: 8px; padding: 8px 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="calc">
+  <h2>ポッピンロープ ポイント調整ツール</h2>
+
+  <div class="usage">
+    <h3>利用方法</h3>
+    <ol>
+      <li>目標ポイントと現在ポイントの偶奇を揃えてください。目標ポイントまで20万ポイント以内に調整してください。(ライブブースト0炊きで任意の楽曲をプレイし揃えるのがオススメです。推奨ポイント差は1~3万ポイントです。差が小さすぎると調整不可能な場合があります。)</li>
+      <li>ミニゲームブーストを0に設定し、ポッピンロープを1~10回ジャンプした際のイベントポイント増加量を入力してください。(実際にプレイしてください)</li>
+      <li>計算実行ボタンを押してください。最短プレイ回数と、最小ブースト消費数が表示されます。</li>
+    </ol>
+  </div>
+
+  <label for="current">現在ポイント</label>
+  <input type="text" id="current" inputmode="numeric">
+  <label for="target">目標ポイント</label>
+  <input type="text" id="target" inputmode="numeric">
+
+  <h3>ジャンプ回数ごとの獲得ポイント(1倍時)</h3>
+  <div class="grid" id="pointsGrid"></div>
+
+  <button id="run">計算実行</button>
+  <ul class="errors" id="errors"></ul>
+  <div id="results"></div>
+</div>
+
+<script>
+// 倍率 => ブースト消費数
+const BOOSTS = [[1,0],[6,15],[12,30],[17,45],[22,60],[26,75],[30,90]];
+const MAX_DIFF = 200000;
+
+// 入力欄を生成
+const grid = document.getElementById('pointsGrid');
+for (let i = 1; i <= 10; i++) {
+  const div = document.createElement('div');
+  div.innerHTML = `<label for="p${i}">${i}回</label><input type="text" id="p${i}" inputmode="numeric">`;
+  grid.appendChild(div);
+}
+
+function toInt(v) {
+  // 全角数字・全角カンマを半角に変換
+  v = String(v).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  v = v.replace(/[,，]/g, '').trim();
+  return /^\d+$/.test(v) ? parseInt(v, 10) : null;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 同じ獲得ポイントなら消費ブーストが最小のものだけ残す
+function buildOptions(points) {
+  const byGain = new Map();
+  points.forEach((p, idx) => {
+    if (p <= 0) return;
+    for (const [mult, cost] of BOOSTS) {
+      const gain = p * mult;
+      const cur = byGain.get(gain);
+      if (!cur || cost < cur.cost) byGain.set(gain, { jump: idx + 1, mult, gain, cost });
+    }
+  });
+  return [...byGain.values()];
+}
+
+// mode: 'plays' = プレイ回数最小(同数ならブースト最小) / 'boost' = ブースト最小(同数ならプレイ回数最小)
+function solve(diff, options, mode) {
+  const INF = Infinity;
+  const primary = new Array(diff + 1).fill(INF);
+  const secondary = new Array(diff + 1).fill(INF);
+  const choice = new Array(diff + 1).fill(-1);
+  primary[0] = 0; secondary[0] = 0;
+
+  for (let d = 1; d <= diff; d++) {
+    for (let i = 0; i < options.length; i++) {
+      const o = options[i];
+      if (o.gain > d) continue;
+      const prev = d - o.gain;
+      if (primary[prev] === INF) continue;
+      const np = primary[prev] + (mode === 'plays' ? 1 : o.cost);
+      const ns = secondary[prev] + (mode === 'plays' ? o.cost : 1);
+      if (np < primary[d] || (np === primary[d] && ns < secondary[d])) {
+        primary[d] = np; secondary[d] = ns; choice[d] = i;
+      }
+    }
+  }
+  if (primary[diff] === INF) return null;
+
+  const counts = new Map();
+  for (let d = diff; d > 0; d -= options[choice[d]].gain) {
+    const i = choice[d];
+    counts.set(i, (counts.get(i) || 0) + 1);
+  }
+  let plays = 0, boost = 0;
+  const steps = [];
+  for (const [i, n] of counts) {
+    const o = options[i];
+    steps.push({ ...o, count: n });
+    plays += n; boost += n * o.cost;
+  }
+  steps.sort((a, b) => b.gain - a.gain);
+  return { plays, boost, steps };
+}
+
+function renderResult(label, r) {
+  if (!r) return `<div class="result-box"><h3>${esc(label)}</h3><p>ちょうどの組み合わせが見つかりませんでした。</p></div>`;
+  const items = r.steps.map(s =>
+    `<li>${s.jump}回ジャンプ × ${s.mult}倍 を ${s.count}回(+${(s.gain * s.count).toLocaleString()})</li>`).join('');
+  return `<div class="result-box"><h3>${esc(label)}</h3>
+    <p>プレイ回数: <strong>${r.plays.toLocaleString()}回</strong> / ブースト消費: <strong>${r.boost.toLocaleString()}</strong></p>
+    <ul>${items}</ul></div>`;
+}
+
+document.getElementById('run').addEventListener('click', () => {
+  const errors = [];
+  const current = toInt(document.getElementById('current').value);
+  const target = toInt(document.getElementById('target').value);
+  const points = [];
+  for (let i = 1; i <= 10; i++) {
+    const p = toInt(document.getElementById('p' + i).value);
+    if (p === null) errors.push(`${i}回ジャンプのポイントは0以上の整数で入力してください。`);
+    points.push(p);
+  }
+  if (current === null) errors.push('現在ポイントは0以上の整数で入力してください。');
+  if (target === null) errors.push('目標ポイントは0以上の整数で入力してください。');
+  if (current !== null && target !== null && target <= current) errors.push('目標ポイントは現在ポイントより大きくしてください。');
+  if (!errors.length && Math.max(...points) <= 0) errors.push('ジャンプ時のポイントを1つ以上入力してください。');
+  if (!errors.length && target - current > MAX_DIFF) errors.push(`差分が大きすぎます(上限${MAX_DIFF.toLocaleString()})。`);
+
+  document.getElementById('errors').innerHTML = errors.map(e => `<li>${esc(e)}</li>`).join('');
+  const out = document.getElementById('results');
+  if (errors.length) { out.innerHTML = ''; return; }
+
+  const diff = target - current;
+  const options = buildOptions(points);
+  out.innerHTML = `<p>必要ポイント: ${diff.toLocaleString()}</p>`
+    + renderResult('最短プレイ回数', solve(diff, options, 'plays'))
+    + renderResult('最小ブースト消費数', solve(diff, options, 'boost'));
+});
+</script>
+</body>
+</html>
